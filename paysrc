@@ -1,0 +1,328 @@
+#!/usr/bin/env php
+<?php
+/*
+PaySrc CLI Client Demo
+----------------------
+Site: https://paysrc.com/
+Author: Osvaldo Jiang <osvaldo@paysrc.com>
+*/
+
+
+if(php_sapi_name() != 'cli') {
+	echo "Run this from the console\n";
+	return;
+}
+
+// Retrieves command line arguments
+$lopts = [
+    'address:',
+    'amount:',
+    'from:',
+    'to:',
+    'message:',
+    'confirmations:',
+    'expires:',
+    'json',
+    'testnet',
+	'noqr',
+	'nowait',
+	'query:',
+	'legacy',
+];
+
+$showHelp = false;
+
+$options = getopt('',$lopts);
+$reqs = ['amount','address'];
+foreach($reqs as $key) {
+	if(empty($options[$key])) {
+		$showHelp = true;
+		break;
+    }
+}
+if(!empty($options['query'])) {
+	$showHelp = false;
+}
+
+if($showHelp) {
+    echo "PaySrc - Payment Request Generator
+----
+
+Usage
+php paysrc.php --address=\"1MH5fNnWJ4YduxW61rHqpuekoMwCmgWp2M\" --amount=0.001
+php paysrc.php --query <PAYMENT_ID>
+
+Returns
+Payment Request
+
+ID:      <PAYMENT_ID>
+Amount:  BCH <AMOUNT>
+Address: <ADDRESS>
+Created: <CREATED>
+Expires: <EXPIRATION>
+Status:  <PAYMENT_STATUS>
+Link:    https://paysrc.com/p/<PAYMENT_ID>
+----
+
+Parameters:
+
+  --address <address>
+            A cashaddr or legacy address where the final funds will be sent.
+            This address is hidden to the payer, you can use the same address multiple times.
+            Legacy addresses will be converted to cashaddr format.
+            !REQUIRED
+
+  --amount <amount>
+            The amount of BCH to request.
+            !REQUIRED
+
+  --from <from>
+            Name and email of who is requesting the payment (beneficiary).
+            Examples: --from \"Name <user@domain>\"
+                      --from \"Name\"
+                      --from \"<user@domain>\"
+
+  --to <to>
+            Name and email of the customer or person to whom the payment is being sent (payer).
+            To send a notification to the payer's email, the beneficiary's email must be provided too.
+            Examples: --from \"Name <user@domain>\"
+                      --from \"Name\"
+                      --from \"<user@domain>\"
+
+  --message <message>
+            An optional message/text string.
+            Warning: This message is public and not logged on the blockchain.
+
+  --confirmations <confirmations>
+            A number of confirmations required for the payer's confirmation.
+            If not set, the minimum number of confirmations possible is used.
+
+  --expires <expires>
+            An optional UTC date-time expiration for the payment request.
+            Examples: --expires \"2018-12-31 12:34:56\"
+                      --expires \"+3 months\"
+                      --expires \"1546225200\"
+
+  --query <payment_id>
+            Returns the Payment
+
+Settings
+
+  --json    Outputs the result in JSON format and exits.
+  --testnet Runs on testnet. Make sure your address is testnet address.
+  --nowait  Print and exit, do not wait for payment completion.
+  --noqr    Do not print the QR code.
+  --legacy  Displays legacy addresses.
+
+";
+    return;
+}
+
+$sets = ['json','testnet','nowait','noqr','legacy'];
+foreach($sets as $set) {
+	$options[$set] = isset($options[$set]) ? true : false;
+}
+$GLOBALS['API_URI'] = 'https://api.paysrc.com/v1';
+$GLOBALS['WEB_URI'] = 'https://paysrc.com';
+if($options['testnet']) {
+	$GLOBALS['API_URI'] = 'https://api.testnet.paysrc.com/v1';
+	$GLOBALS['WEB_URI'] = 'https://testnet.paysrc.com';
+}
+$GLOBALS['JSON'] = $options['json'];
+$GLOBALS['LEGACY'] = $options['legacy'];
+
+
+if(empty($options['query'])) {
+
+	// From/To
+	if(isset($options['from'])) {
+		preg_match('/^(?P<name>[^<@]*)?([\s]*<)?(?P<email>[^<>@\s]+@[^\s>]+)?>?$/U',$options['from'],$match);
+		if(!empty($match['name']))
+			$options['from_name'] = $match['name'];
+		if(!empty($match['email']))
+			$options['from_email'] = $match['email'];
+	}
+	if(isset($options['to'])) {
+		preg_match('/^(?P<name>[^<@]*)?([\s]*<)?(?P<email>[^<>@\s]+@[^\s>]+)?>?$/U',$options['to'],$match);
+		if(!empty($match['name']))
+			$options['to_name'] = $match['name'];
+		if(!empty($match['email']))
+			$options['to_email'] = $match['email'];
+	}
+
+	// Creates the request parameters
+	$map = [
+		'address'=>'payee_address',
+		'amount'=>'amount',
+		'from_name'=>'payee_name',
+		'from_email'=>'payee_email',
+		'to_name'=>'payer_name',
+		'to_email'=>'payer_email',
+		'message'=>'message',
+		'confirmations'=>'required_confirmations',
+		'expires'=>'expires',
+	];
+	$request = [];
+	foreach($options as $k=>$v) {
+		if(isset($map[$k])) {
+			$request[$map[$k]] = $v;
+		}
+	}
+
+	// Creates the payment
+	$request['coin'] = 'BCH';
+	try {
+		$result = apiCall('/payment/create',$request);
+	} catch(\Exception $e) {
+		echo "\nERROR: ".$e->getCode()."\nMESSAGE: ".$e->getMessage()."\n";
+		exit;
+	}
+	$paymentId = $result['id'];
+
+} else {
+	$paymentId = $options['query'];
+}
+
+
+paymentRead($paymentId);
+if(empty($options['json']) && empty($options['noqr'])) {
+	paymentQr($paymentId);
+}
+if(empty($options['nowait'])) {
+	$status = false;
+	do {
+		ob_start();
+		$data = paymentSummary($paymentId);
+		if($data['status'] != $status) {
+			$status = $data['status'];
+			ob_end_flush();
+		} else {
+			ob_end_clean();
+		}
+		if( in_array($status,['CREDITED','PAID','EXPIRED','PAYEE_CANCELED'])) {
+			break;
+		}
+		sleep(3);
+	} while( true );
+}
+return;
+
+
+function paymentSummary($paymentId) {
+	try {
+		$data = apiCall("/payment/summary/{$paymentId}");
+	} catch(\Exception $e) {
+		echo "\nERROR: ".$e->getCode()."\nMESSAGE: ".$e->getMessage()."\n";
+		exit;
+	}
+	if(empty($GLOBALS['JSON'])){
+		echo "\nStatus: {$data['status']} @ {$data['updated']}\n";
+		printf("Pending: %.8f | Balance: %.8f | Transferred: %.8f | Paid: %.8f | Fees: %.8f | Refunded: %.8f\n",
+			$data['balance_pending'],
+			$data['balance'],
+			$data['transferred'],
+			$data['paid'],
+			$data['fees'],
+			$data['refunded']);
+	} else {
+		echo json_encode($data)."\n";
+	}
+	return $data;
+}
+
+
+function paymentQr($paymentId) {
+	try {
+		$url = '/payment/qr/'.$paymentId.'?ascii=x';
+		if($GLOBALS['LEGACY'])
+			$url .= '&mode=legacy';
+		$qr = apiCall($url);
+		$qr = utf8_decode($qr);
+		$lines = explode("\n",$qr);
+		foreach($lines as $pos=>$line) {
+			$line = str_split($line);
+			foreach($line as $chr) {
+				if($chr == 'x')
+					$chr = '█';
+				echo $chr.$chr;
+			}
+			echo "\n";
+		}
+		return $qr;
+	} catch(\Exception $e) {
+		echo "\n--- QR UNAVAILABLE ---\n";
+	}
+	return false;
+}
+
+
+function paymentRead($paymentId) {
+	try {
+		$result = apiCall('/payment/read/'.$paymentId);
+	} catch(\Exception $e) {
+		echo "\nERROR: ".$e->getCode()."\nMESSAGE: ".$e->getMessage()."\n";
+		exit;
+	}
+	$root = $GLOBALS['WEB_URI'];
+	$apiRoot = $GLOBALS['API_URI'];
+	if(empty($GLOBALS['JSON'])){
+		$addr = $GLOBALS['LEGACY'] ? $result['broker_legacy'] : $result['broker_address'];
+		echo "PaySrc Payment Request
+ID:      {$result['id']}
+Amount:  {$result['coin']} {$result['amount']}
+Address: {$addr}
+Created: {$result['created']}
+Expires: {$result['expires']}
+Status:  {$result['status']}
+Link:    {$root}/p/{$result['id']}
+";
+	} else {
+		echo json_encode($result)."\n";
+	}
+	return $result;
+}
+
+
+
+
+// If params passed, assumes POST
+function apiCall($path,$params=null) {
+	$root = $GLOBALS['API_URI'];
+    $context = null;
+    if($params) {
+		if(is_array($params)) {
+			$params = http_build_query($params);
+		}
+        // Creates the HTTP context for file_get_contents
+        $context = stream_context_create([
+            'http'=>[
+                'method'    => 'POST',
+                'header'    => 'Content-type: application/x-www-form-urlencoded',
+                'content'    => $params,
+				'ignore_errors' => true,
+            ],
+        ]);
+    } else {
+		$context = stream_context_create([
+			'http'=>[
+				'ignore_errors' => true,
+			],
+		]);
+	}
+    // Calls the API
+    $response = file_get_contents($root.$path,false,$context);
+	$result = json_decode($response,true);
+	if(empty($result)) {
+		if(empty($response)) {
+			throw new \Exception('Unknown server error');
+		}
+		return $response;
+	}
+	// Evaluate error
+	if(isset($result['error'])) {
+		throw new \Exception($result['error']['message'],$result['error']['code']);
+	}
+	return $result;
+}
+
+
