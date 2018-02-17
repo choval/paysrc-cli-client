@@ -1,7 +1,7 @@
 # PaySrc CLI Client
 
 
-![Screenshot](https://raw.github.com/choval/paysrc-cli-client/master/screenshot.png)
+![Screenshot](https://raw.github.com/paysrc/cli-client/master/screenshot.png)
 
 This is a basic CLI client for [PaySrc](https://paysrc.com/), a BCH payment platform.  
 Tested with PaySrc API v1 on PHP 7.0.
